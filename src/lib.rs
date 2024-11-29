@@ -90,7 +90,6 @@
     clippy::unimplemented,
     clippy::wildcard_imports,
     future_incompatible,
-    missing_docs,
     missing_debug_implementations,
     unreachable_pub
 )]
@@ -102,6 +101,8 @@ use crossbeam_channel::{Receiver, Sender};
 use std::{
     fmt::{self, Debug, Display},
     path::Path,
+    str::FromStr,
+    sync::Arc,
     thread,
 };
 use tokio::sync::oneshot::{self};
@@ -173,8 +174,98 @@ pub struct Connection {
     sender: Sender<Message>,
 }
 
-type Row = Vec<rusqlite::types::Value>;
-type Rows = Vec<Row>;
+#[allow(unused)]
+#[derive(Debug)]
+pub struct Column {
+    name: String,
+    decl_type: Option<libsql::ValueType>,
+}
+
+#[derive(Debug)]
+pub struct Rows(Vec<Row>, Arc<Vec<Column>>);
+
+impl Rows {
+    pub fn new(columns: Arc<Vec<Column>>) -> Self {
+        Self(Vec::<Row>::new(), columns)
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, Row> {
+        self.0.iter()
+    }
+
+    pub fn column_count(&self) -> usize {
+        self.1.len()
+    }
+
+    pub fn column_names(&self) -> Vec<&str> {
+        self.1.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    pub fn column_name(&self, idx: usize) -> Option<&str> {
+        self.1.get(idx).map(|c| c.name.as_str())
+    }
+
+    pub fn column_type(&self, idx: usize) -> libsql::Result<libsql::ValueType> {
+        if let Some(ref c) = self.1.get(idx) {
+            return c.decl_type.ok_or(libsql::Error::InvalidColumnType);
+        }
+        Err(libsql::Error::InvalidColumnType)
+    }
+}
+
+#[derive(Debug)]
+pub struct Row(Vec<rusqlite::types::Value>, Arc<Vec<Column>>);
+
+impl Row {
+    pub fn with_capacity(capacity: usize, columns: Arc<Vec<Column>>) -> Self {
+        Self(
+            Vec::<rusqlite::types::Value>::with_capacity(capacity),
+            columns,
+        )
+    }
+
+    pub fn get<T>(&self, idx: usize) -> rusqlite::types::FromSqlResult<T>
+    where
+        T: rusqlite::types::FromSql,
+    {
+        let val = self
+            .0
+            .get(idx)
+            .ok_or_else(|| rusqlite::types::FromSqlError::Other("Index out of bounds".into()))?;
+        T::column_result(val.into())
+    }
+
+    pub fn get_value(&self, idx: usize) -> Result<rusqlite::types::Value> {
+        self.0
+            .get(idx)
+            .ok_or_else(|| Error::Other("Index out of bounds".into()))
+            .cloned()
+    }
+
+    pub fn column_count(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn column_names(&self) -> Vec<&str> {
+        self.1.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    pub fn column_name(&self, idx: usize) -> Option<&str> {
+        self.1.get(idx).map(|c| c.name.as_str())
+    }
+
+    pub fn column_type(&self, idx: usize) -> libsql::Result<libsql::ValueType> {
+        if let Some(ref c) = self.1.get(idx) {
+            return c.decl_type.ok_or(libsql::Error::InvalidColumnType);
+        }
+        Err(libsql::Error::InvalidColumnType)
+    }
+}
 
 impl Connection {
     /// Open a new connection to a SQLite database.
@@ -332,46 +423,60 @@ impl Connection {
         }
     }
 
-    fn bind_params(stmt: &mut Statement<'_>, params: libsql::params::Params) {
+    fn bind_params(stmt: &mut Statement<'_>, params: libsql::params::Params) -> Result<()> {
         match params {
             libsql::params::Params::None => {}
             libsql::params::Params::Positional(params) => {
                 for (idx, p) in params.into_iter().enumerate() {
-                    if let Err(err) = stmt.raw_bind_parameter(idx + 1, Self::convert(p)) {
-                        let count = stmt.parameter_count();
-                        panic!("{idx} of {count}: {err}");
-                    }
+                    stmt.raw_bind_parameter(idx + 1, Self::convert(p))?;
                 }
             }
             libsql::params::Params::Named(params) => {
                 for (name, v) in params.into_iter() {
-                    let idx = stmt.parameter_index(&name).unwrap().unwrap();
-                    stmt.raw_bind_parameter(idx, Self::convert(v)).unwrap();
+                    let Some(idx) = stmt.parameter_index(&name)? else {
+                        return Err(Error::Other("invalid parameter".into()));
+                    };
+                    stmt.raw_bind_parameter(idx, Self::convert(v))?;
                 }
             }
         };
+
+        Ok(())
     }
 
     /// Adapter method converting libsql parameters.
     pub async fn query(&self, sql: &str, params: impl libsql::params::IntoParams) -> Result<Rows> {
-        let params = params.into_params().unwrap();
+        let params = params
+            .into_params()
+            .map_err(|err| Error::Other(err.into()))?;
 
         let sql = sql.to_string();
         let rows = self
             .call(move |conn: &mut rusqlite::Connection| {
                 let mut stmt = conn.prepare(&sql)?;
-                Self::bind_params(&mut stmt, params);
+                Self::bind_params(&mut stmt, params)?;
                 let mut rows = stmt.raw_query();
 
-                let count = rows.as_ref().map_or(0, |stmt| stmt.column_count());
+                let columns: Arc<Vec<Column>> = Arc::new(rows.as_ref().map_or(vec![], |stmt| {
+                    stmt.columns()
+                        .into_iter()
+                        .map(|c| Column {
+                            name: c.name().to_string(),
+                            decl_type: c
+                                .decl_type()
+                                .and_then(|s| libsql::ValueType::from_str(s).ok()),
+                        })
+                        .collect()
+                }));
+                let count = columns.len();
 
-                let mut result = Rows::new();
+                let mut result = Rows::new(columns.clone());
                 while let Ok(Some(row)) = rows.next() {
-                    let mut r = Row::with_capacity(count);
+                    let mut r = Row::with_capacity(count, columns.clone());
                     for idx in 0..count {
-                        r.push(row.get_ref_unwrap(idx).into());
+                        r.0.push(row.get_ref(idx)?.into());
                     }
-                    result.push(r);
+                    result.0.push(r);
                 }
 
                 return Ok(result);
@@ -386,21 +491,34 @@ impl Connection {
         sql: &str,
         params: impl libsql::params::IntoParams,
     ) -> Result<Option<Row>> {
-        let params = params.into_params().unwrap();
+        let params = params
+            .into_params()
+            .map_err(|err| Error::Other(err.into()))?;
 
         let sql = sql.to_string();
         let rows = self
             .call(move |conn: &mut rusqlite::Connection| {
                 let mut stmt = conn.prepare(&sql)?;
-                Self::bind_params(&mut stmt, params);
+                Self::bind_params(&mut stmt, params)?;
                 let mut rows = stmt.raw_query();
 
-                let count = rows.as_ref().map_or(0, |stmt| stmt.column_count());
+                let columns: Arc<Vec<Column>> = Arc::new(rows.as_ref().map_or(vec![], |stmt| {
+                    stmt.columns()
+                        .into_iter()
+                        .map(|c| Column {
+                            name: c.name().to_string(),
+                            decl_type: c
+                                .decl_type()
+                                .and_then(|s| libsql::ValueType::from_str(s).ok()),
+                        })
+                        .collect()
+                }));
+                let count = columns.len();
 
                 while let Ok(Some(row)) = rows.next() {
-                    let mut r = Row::with_capacity(count);
+                    let mut r = Row::with_capacity(count, columns.clone());
                     for idx in 0..count {
-                        r.push(row.get_ref_unwrap(idx).into());
+                        r.0.push(row.get_ref(idx)?.into());
                     }
                     return Ok(Some(r));
                 }
@@ -418,13 +536,15 @@ impl Connection {
         sql: &str,
         params: impl libsql::params::IntoParams,
     ) -> Result<usize> {
-        let params = params.into_params().unwrap();
+        let params = params
+            .into_params()
+            .map_err(|err| Error::Other(err.into()))?;
 
         let sql = sql.to_string();
         let rows_affected = self
             .call(move |conn: &mut rusqlite::Connection| {
                 let mut stmt = conn.prepare(&sql)?;
-                Self::bind_params(&mut stmt, params);
+                Self::bind_params(&mut stmt, params)?;
                 return Ok(stmt.raw_execute()?);
             })
             .await;

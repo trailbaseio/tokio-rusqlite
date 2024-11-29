@@ -280,6 +280,17 @@ async fn call_libsql_query() {
 
     let rows = conn.query("SELECT * FROM person", ()).await.unwrap();
     assert_eq!(2, rows.len());
+    assert!(matches!(
+        rows.column_type(0).unwrap(),
+        libsql::ValueType::Integer
+    ));
+    assert_eq!(rows.column_name(0).unwrap(), "id");
+
+    assert!(matches!(
+        rows.column_type(1).unwrap(),
+        libsql::ValueType::Text
+    ));
+    assert_eq!(rows.column_name(1).unwrap(), "name");
 
     conn.execute("UPDATE person SET name = 'baz' WHERE id = $1", [1])
         .await
@@ -291,7 +302,7 @@ async fn call_libsql_query() {
         .unwrap()
         .unwrap();
 
-    assert_eq!(row[0], rusqlite::types::Value::Text("baz".to_string()));
+    assert_eq!(row.get::<String>(0).unwrap(), "baz");
 }
 
 // The rest is boilerplate, not really that important
