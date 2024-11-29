@@ -552,6 +552,14 @@ impl Connection {
         return rows_affected;
     }
 
+    /// Adapter method converting libsql parameters.
+    pub async fn execute_batch(&self, sql: &str) -> Result<()> {
+        let sql = sql.to_string();
+        Ok(self
+            .call(move |conn: &mut rusqlite::Connection| Ok(conn.execute_batch(&sql)?))
+            .await?)
+    }
+
     /// Close the database connection.
     ///
     /// This is functionally equivalent to the `Drop` implementation for
