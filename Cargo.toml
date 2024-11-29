@@ -16,9 +16,9 @@ bundled = ["rusqlite/bundled"]
 
 [dependencies]
 crossbeam-channel = "0.5"
-rusqlite = "0.32"
-tokio = { version = "1", features = ["sync"] }
+rusqlite = { workspace = true }
+libsql = { workspace = true }
+tokio = { version = "1", feauures = ["sync"] }
 
 [dev-dependencies]
-rusqlite = { version = "0.32", features = ["bundled"] }
 tokio = { version = "1", features = ["full"] }

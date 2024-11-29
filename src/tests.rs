@@ -249,6 +249,51 @@ async fn test_ergonomic_errors() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn call_libsql_query() {
+    let conn = Connection::open_in_memory().await.unwrap();
+
+    let result = conn
+        .call(|conn| {
+            conn.execute(
+                "CREATE TABLE person(id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
+                [],
+            )
+            .map_err(|e| e.into())
+        })
+        .await;
+
+    assert_eq!(0, result.unwrap());
+
+    conn.query(
+        "INSERT INTO person (id, name) VALUES ($1, $2)",
+        libsql::params!(0, "foo"),
+    )
+    .await
+    .unwrap();
+    conn.query(
+        "INSERT INTO person (id, name) VALUES (:id, :name)",
+        libsql::named_params! {":id": 1, ":name": "bar"},
+    )
+    .await
+    .unwrap();
+
+    let rows = conn.query("SELECT * FROM person", ()).await.unwrap();
+    assert_eq!(2, rows.len());
+
+    conn.execute("UPDATE person SET name = 'baz' WHERE id = $1", [1])
+        .await
+        .unwrap();
+
+    let row = conn
+        .query_row("SELECT name FROM person WHERE id = $1", [1])
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(row[0], rusqlite::types::Value::Text("baz".to_string()));
+}
+
 // The rest is boilerplate, not really that important
 
 #[derive(Debug)]

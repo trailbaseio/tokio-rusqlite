@@ -1,0 +1,2 @@
+# Docs: https://rust-lang.github.io/rustfmt/
+edition = "2021"

@@ -173,6 +173,9 @@ pub struct Connection {
     sender: Sender<Message>,
 }
 
+type Row = Vec<rusqlite::types::Value>;
+type Rows = Vec<Row>;
+
 impl Connection {
     /// Open a new connection to a SQLite database.
     ///
@@ -317,6 +320,116 @@ impl Connection {
             .expect("database connection should be open");
 
         receiver.await.expect(BUG_TEXT)
+    }
+
+    fn convert(v: libsql::Value) -> rusqlite::types::Value {
+        match v {
+            libsql::Value::Null => rusqlite::types::Value::Null,
+            libsql::Value::Integer(i) => rusqlite::types::Value::Integer(i),
+            libsql::Value::Real(i) => rusqlite::types::Value::Real(i),
+            libsql::Value::Text(i) => rusqlite::types::Value::Text(i),
+            libsql::Value::Blob(i) => rusqlite::types::Value::Blob(i),
+        }
+    }
+
+    fn bind_params(stmt: &mut Statement<'_>, params: libsql::params::Params) {
+        match params {
+            libsql::params::Params::None => {}
+            libsql::params::Params::Positional(params) => {
+                for (idx, p) in params.into_iter().enumerate() {
+                    if let Err(err) = stmt.raw_bind_parameter(idx + 1, Self::convert(p)) {
+                        let count = stmt.parameter_count();
+                        panic!("{idx} of {count}: {err}");
+                    }
+                }
+            }
+            libsql::params::Params::Named(params) => {
+                for (name, v) in params.into_iter() {
+                    let idx = stmt.parameter_index(&name).unwrap().unwrap();
+                    stmt.raw_bind_parameter(idx, Self::convert(v)).unwrap();
+                }
+            }
+        };
+    }
+
+    /// Adapter method converting libsql parameters.
+    pub async fn query(&self, sql: &str, params: impl libsql::params::IntoParams) -> Result<Rows> {
+        let params = params.into_params().unwrap();
+
+        let sql = sql.to_string();
+        let rows = self
+            .call(move |conn: &mut rusqlite::Connection| {
+                let mut stmt = conn.prepare(&sql)?;
+                Self::bind_params(&mut stmt, params);
+                let mut rows = stmt.raw_query();
+
+                let count = rows.as_ref().map_or(0, |stmt| stmt.column_count());
+
+                let mut result = Rows::new();
+                while let Ok(Some(row)) = rows.next() {
+                    let mut r = Row::with_capacity(count);
+                    for idx in 0..count {
+                        r.push(row.get_ref_unwrap(idx).into());
+                    }
+                    result.push(r);
+                }
+
+                return Ok(result);
+            })
+            .await;
+
+        return rows;
+    }
+
+    pub async fn query_row(
+        &self,
+        sql: &str,
+        params: impl libsql::params::IntoParams,
+    ) -> Result<Option<Row>> {
+        let params = params.into_params().unwrap();
+
+        let sql = sql.to_string();
+        let rows = self
+            .call(move |conn: &mut rusqlite::Connection| {
+                let mut stmt = conn.prepare(&sql)?;
+                Self::bind_params(&mut stmt, params);
+                let mut rows = stmt.raw_query();
+
+                let count = rows.as_ref().map_or(0, |stmt| stmt.column_count());
+
+                while let Ok(Some(row)) = rows.next() {
+                    let mut r = Row::with_capacity(count);
+                    for idx in 0..count {
+                        r.push(row.get_ref_unwrap(idx).into());
+                    }
+                    return Ok(Some(r));
+                }
+
+                return Ok(None);
+            })
+            .await;
+
+        return rows;
+    }
+
+    /// Adapter method converting libsql parameters.
+    pub async fn execute(
+        &self,
+        sql: &str,
+        params: impl libsql::params::IntoParams,
+    ) -> Result<usize> {
+        let params = params.into_params().unwrap();
+
+        let sql = sql.to_string();
+        let rows_affected = self
+            .call(move |conn: &mut rusqlite::Connection| {
+                let mut stmt = conn.prepare(&sql)?;
+                Self::bind_params(&mut stmt, params);
+                return Ok(stmt.raw_execute()?);
+            })
+            .await;
+
+        return rows_affected;
     }
 
     /// Close the database connection.
