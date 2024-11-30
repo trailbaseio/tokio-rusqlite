@@ -323,6 +323,10 @@ impl Connection {
             .map_err(Error::Rusqlite)
     }
 
+    pub async fn from_conn(conn: rusqlite::Connection) -> Result<Self> {
+        start(move || Ok(conn)).await.map_err(Error::Rusqlite)
+    }
+
     /// Open a new connection to an in-memory SQLite database.
     ///
     /// # Failure
@@ -609,7 +613,7 @@ pub fn bind_params(stmt: &mut Statement<'_>, params: libsql::params::Params) -> 
         libsql::params::Params::Named(params) => {
             for (name, v) in params.into_iter() {
                 let Some(idx) = stmt.parameter_index(&name)? else {
-                    return Err(Error::Other("invalid parameter".into()));
+                    continue;
                 };
                 stmt.raw_bind_parameter(idx, convert(v))?;
             }
