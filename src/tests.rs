@@ -318,6 +318,18 @@ async fn call_libsql_query() {
         .unwrap();
     assert_eq!(person.id, 1);
     assert_eq!(person.name, "baz");
+
+    let rows = conn
+        .execute_batch(r#"
+            CREATE TABLE foo (id INTEGER) STRICT;
+            INSERT INTO foo (id) VALUES (17);
+            SELECT * FROM foo;
+        "#)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows.0.get(0).unwrap().get::<i64>(0), Ok(17));
 }
 
 // The rest is boilerplate, not really that important

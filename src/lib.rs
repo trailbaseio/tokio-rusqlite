@@ -185,22 +185,25 @@ pub struct Column {
 #[derive(Debug)]
 pub struct Rows(Vec<Row>, Arc<Vec<Column>>);
 
+fn columns(stmt: &rusqlite::Statement<'_>) -> Vec<Column> {
+    return stmt
+        .columns()
+        .into_iter()
+        .map(|c| Column {
+            name: c.name().to_string(),
+            decl_type: c
+                .decl_type()
+                .and_then(|s| libsql::ValueType::from_str(s).ok()),
+        })
+        .collect();
+}
+
 impl Rows {
     pub fn from_rows(mut rows: rusqlite::Rows) -> rusqlite::Result<Self> {
-        let columns: Arc<Vec<Column>> = Arc::new(rows.as_ref().map_or(vec![], |stmt| {
-            stmt.columns()
-                .into_iter()
-                .map(|c| Column {
-                    name: c.name().to_string(),
-                    decl_type: c
-                        .decl_type()
-                        .and_then(|s| libsql::ValueType::from_str(s).ok()),
-                })
-                .collect()
-        }));
+        let columns: Arc<Vec<Column>> = Arc::new(rows.as_ref().map_or(vec![], columns));
 
         let mut result = vec![];
-        while let Ok(Some(row)) = rows.next() {
+        while let Some(row) = rows.next()? {
             result.push(Row::from_row(row, Some(columns.clone()))?);
         }
 
@@ -240,24 +243,8 @@ impl Rows {
 pub struct Row(Vec<rusqlite::types::Value>, Arc<Vec<Column>>);
 
 impl Row {
-    pub fn from_row(
-        row: &rusqlite::Row,
-        columns: Option<Arc<Vec<Column>>>,
-    ) -> rusqlite::Result<Self> {
-        let columns = columns.unwrap_or_else(|| {
-            let c = row
-                .as_ref()
-                .columns()
-                .into_iter()
-                .map(|c| Column {
-                    name: c.name().to_string(),
-                    decl_type: c
-                        .decl_type()
-                        .and_then(|s| libsql::ValueType::from_str(s).ok()),
-                })
-                .collect();
-            Arc::new(c)
-        });
+    pub fn from_row(row: &rusqlite::Row, cols: Option<Arc<Vec<Column>>>) -> rusqlite::Result<Self> {
+        let columns = cols.unwrap_or_else(|| Arc::new(columns(row.as_ref())));
 
         let count = columns.len();
         let mut values = Vec::<rusqlite::types::Value>::with_capacity(count);
@@ -488,7 +475,7 @@ impl Connection {
                 let mut stmt = conn.prepare(&sql)?;
                 bind_params(&mut stmt, params)?;
                 let mut rows = stmt.raw_query();
-                if let Ok(Some(row)) = rows.next() {
+                if let Some(row) = rows.next()? {
                     return Ok(Some(Row::from_row(row, None)?));
                 }
                 Ok(None)
@@ -511,7 +498,7 @@ impl Connection {
                 let mut stmt = conn.prepare(&sql)?;
                 bind_params(&mut stmt, params)?;
                 let mut rows = stmt.raw_query();
-                if let Ok(Some(row)) = rows.next() {
+                if let Some(row) = rows.next()? {
                     return Ok(Some(
                         serde_rusqlite::from_row(row).map_err(|err| Error::Other(err.into()))?,
                     ));
@@ -538,7 +525,7 @@ impl Connection {
                 let mut rows = stmt.raw_query();
 
                 let mut values = vec![];
-                while let Ok(Some(row)) = rows.next() {
+                while let Some(row) = rows.next()? {
                     values.push(
                         serde_rusqlite::from_row(row).map_err(|err| Error::Other(err.into()))?,
                     );
@@ -569,10 +556,34 @@ impl Connection {
     }
 
     /// Adapter method converting libsql parameters.
-    pub async fn execute_batch(&self, sql: &str) -> Result<()> {
+    pub async fn execute_batch(&self, sql: &str) -> Result<Option<Rows>> {
         let sql = sql.to_string();
-        self.call(move |conn: &mut rusqlite::Connection| Ok(conn.execute_batch(&sql)?))
-            .await
+        return self
+            .call(move |conn: &mut rusqlite::Connection| {
+                let batch = rusqlite::Batch::new(conn, &sql);
+
+                let mut p = batch.peekable();
+                while let Some(iter) = p.next() {
+                    let mut stmt = iter?;
+
+                    let mut rows = stmt.raw_query();
+                    let row = rows.next()?;
+                    if p.peek().is_none() {
+                        if let Some(row) = row {
+                            let cols: Arc<Vec<Column>> = Arc::new(columns(row.as_ref()));
+
+                            let mut result = vec![Row::from_row(row, Some(cols.clone()))?];
+                            while let Some(row) = rows.next()? {
+                                result.push(Row::from_row(row, Some(cols.clone()))?);
+                            }
+                            return Ok(Some(Rows(result, cols)));
+                        }
+                        return Ok(None);
+                    }
+                }
+                return Ok(None);
+            })
+            .await;
     }
 
     /// Close the database connection.
