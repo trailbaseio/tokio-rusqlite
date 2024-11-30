@@ -18,6 +18,8 @@ bundled = ["rusqlite/bundled"]
 crossbeam-channel = "0.5"
 rusqlite = { workspace = true }
 libsql = { workspace = true }
+serde = { version = "^1.0.203" }
+serde_rusqlite = { workspace = true }
 tokio = { version = "1", feauures = ["sync"] }
 
 [dev-dependencies]

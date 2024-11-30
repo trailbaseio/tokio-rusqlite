@@ -1,3 +1,4 @@
+use serde::Deserialize;
 use std::fmt::Display;
 
 use crate::*;
@@ -303,6 +304,20 @@ async fn call_libsql_query() {
         .unwrap();
 
     assert_eq!(row.get::<String>(0).unwrap(), "baz");
+
+    #[derive(Deserialize)]
+    struct Person {
+        id: i64,
+        name: String,
+    }
+
+    let person = conn
+        .query_value::<Person>("SELECT * FROM person WHERE id = $1", [1])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(person.id, 1);
+    assert_eq!(person.name, "baz");
 }
 
 // The rest is boilerplate, not really that important

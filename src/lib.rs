@@ -495,6 +495,33 @@ impl Connection {
         return rows;
     }
 
+    pub async fn query_value<T: serde::de::DeserializeOwned + Send + 'static>(
+        &self,
+        sql: &str,
+        params: impl libsql::params::IntoParams,
+    ) -> Result<Option<T>> {
+        let params = params
+            .into_params()
+            .map_err(|err| Error::Other(err.into()))?;
+
+        let sql = sql.to_string();
+        let rows = self
+            .call(move |conn: &mut rusqlite::Connection| {
+                let mut stmt = conn.prepare(&sql)?;
+                bind_params(&mut stmt, params)?;
+                let mut rows = stmt.raw_query();
+                while let Ok(Some(row)) = rows.next() {
+                    return Ok(Some(
+                        serde_rusqlite::from_row(row).map_err(|err| Error::Other(err.into()))?,
+                    ));
+                }
+                return Ok(None);
+            })
+            .await;
+
+        return rows;
+    }
+
     /// Adapter method converting libsql parameters.
     pub async fn execute(
         &self,
