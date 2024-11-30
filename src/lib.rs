@@ -185,8 +185,25 @@ pub struct Column {
 pub struct Rows(Vec<Row>, Arc<Vec<Column>>);
 
 impl Rows {
-    pub fn new(columns: Arc<Vec<Column>>) -> Self {
-        Self(Vec::<Row>::new(), columns)
+    pub fn from_rows(mut rows: rusqlite::Rows) -> rusqlite::Result<Self> {
+        let columns: Arc<Vec<Column>> = Arc::new(rows.as_ref().map_or(vec![], |stmt| {
+            stmt.columns()
+                .into_iter()
+                .map(|c| Column {
+                    name: c.name().to_string(),
+                    decl_type: c
+                        .decl_type()
+                        .and_then(|s| libsql::ValueType::from_str(s).ok()),
+                })
+                .collect()
+        }));
+
+        let mut result = vec![];
+        while let Ok(Some(row)) = rows.next() {
+            result.push(Row::from_row(row, Some(columns.clone()))?);
+        }
+
+        Ok(Self(result, columns))
     }
 
     #[cfg(test)]
@@ -222,11 +239,32 @@ impl Rows {
 pub struct Row(Vec<rusqlite::types::Value>, Arc<Vec<Column>>);
 
 impl Row {
-    pub fn with_capacity(capacity: usize, columns: Arc<Vec<Column>>) -> Self {
-        Self(
-            Vec::<rusqlite::types::Value>::with_capacity(capacity),
-            columns,
-        )
+    pub fn from_row(
+        row: &rusqlite::Row,
+        columns: Option<Arc<Vec<Column>>>,
+    ) -> rusqlite::Result<Self> {
+        let columns = columns.unwrap_or_else(|| {
+            let c = row
+                .as_ref()
+                .columns()
+                .into_iter()
+                .map(|c| Column {
+                    name: c.name().to_string(),
+                    decl_type: c
+                        .decl_type()
+                        .and_then(|s| libsql::ValueType::from_str(s).ok()),
+                })
+                .collect();
+            Arc::new(c)
+        });
+
+        let count = columns.len();
+        let mut values = Vec::<rusqlite::types::Value>::with_capacity(count);
+        for idx in 0..count {
+            values.push(row.get_ref(idx)?.into());
+        }
+
+        Ok(Self(values, columns))
     }
 
     pub fn get<T>(&self, idx: usize) -> rusqlite::types::FromSqlResult<T>
@@ -413,37 +451,6 @@ impl Connection {
         receiver.await.expect(BUG_TEXT)
     }
 
-    fn convert(v: libsql::Value) -> rusqlite::types::Value {
-        match v {
-            libsql::Value::Null => rusqlite::types::Value::Null,
-            libsql::Value::Integer(i) => rusqlite::types::Value::Integer(i),
-            libsql::Value::Real(i) => rusqlite::types::Value::Real(i),
-            libsql::Value::Text(i) => rusqlite::types::Value::Text(i),
-            libsql::Value::Blob(i) => rusqlite::types::Value::Blob(i),
-        }
-    }
-
-    fn bind_params(stmt: &mut Statement<'_>, params: libsql::params::Params) -> Result<()> {
-        match params {
-            libsql::params::Params::None => {}
-            libsql::params::Params::Positional(params) => {
-                for (idx, p) in params.into_iter().enumerate() {
-                    stmt.raw_bind_parameter(idx + 1, Self::convert(p))?;
-                }
-            }
-            libsql::params::Params::Named(params) => {
-                for (name, v) in params.into_iter() {
-                    let Some(idx) = stmt.parameter_index(&name)? else {
-                        return Err(Error::Other("invalid parameter".into()));
-                    };
-                    stmt.raw_bind_parameter(idx, Self::convert(v))?;
-                }
-            }
-        };
-
-        Ok(())
-    }
-
     /// Adapter method converting libsql parameters.
     pub async fn query(&self, sql: &str, params: impl libsql::params::IntoParams) -> Result<Rows> {
         let params = params
@@ -454,32 +461,9 @@ impl Connection {
         let rows = self
             .call(move |conn: &mut rusqlite::Connection| {
                 let mut stmt = conn.prepare(&sql)?;
-                Self::bind_params(&mut stmt, params)?;
-                let mut rows = stmt.raw_query();
-
-                let columns: Arc<Vec<Column>> = Arc::new(rows.as_ref().map_or(vec![], |stmt| {
-                    stmt.columns()
-                        .into_iter()
-                        .map(|c| Column {
-                            name: c.name().to_string(),
-                            decl_type: c
-                                .decl_type()
-                                .and_then(|s| libsql::ValueType::from_str(s).ok()),
-                        })
-                        .collect()
-                }));
-                let count = columns.len();
-
-                let mut result = Rows::new(columns.clone());
-                while let Ok(Some(row)) = rows.next() {
-                    let mut r = Row::with_capacity(count, columns.clone());
-                    for idx in 0..count {
-                        r.0.push(row.get_ref(idx)?.into());
-                    }
-                    result.0.push(r);
-                }
-
-                return Ok(result);
+                bind_params(&mut stmt, params)?;
+                let rows = stmt.raw_query();
+                return Ok(Rows::from_rows(rows)?);
             })
             .await;
 
@@ -499,30 +483,11 @@ impl Connection {
         let rows = self
             .call(move |conn: &mut rusqlite::Connection| {
                 let mut stmt = conn.prepare(&sql)?;
-                Self::bind_params(&mut stmt, params)?;
+                bind_params(&mut stmt, params)?;
                 let mut rows = stmt.raw_query();
-
-                let columns: Arc<Vec<Column>> = Arc::new(rows.as_ref().map_or(vec![], |stmt| {
-                    stmt.columns()
-                        .into_iter()
-                        .map(|c| Column {
-                            name: c.name().to_string(),
-                            decl_type: c
-                                .decl_type()
-                                .and_then(|s| libsql::ValueType::from_str(s).ok()),
-                        })
-                        .collect()
-                }));
-                let count = columns.len();
-
                 while let Ok(Some(row)) = rows.next() {
-                    let mut r = Row::with_capacity(count, columns.clone());
-                    for idx in 0..count {
-                        r.0.push(row.get_ref(idx)?.into());
-                    }
-                    return Ok(Some(r));
+                    return Ok(Some(Row::from_row(row, None)?));
                 }
-
                 return Ok(None);
             })
             .await;
@@ -544,7 +509,7 @@ impl Connection {
         let rows_affected = self
             .call(move |conn: &mut rusqlite::Connection| {
                 let mut stmt = conn.prepare(&sql)?;
-                Self::bind_params(&mut stmt, params)?;
+                bind_params(&mut stmt, params)?;
                 return Ok(stmt.raw_execute()?);
             })
             .await;
@@ -594,6 +559,37 @@ impl Connection {
 
         result.unwrap().map_err(|e| Error::Close((self, e)))
     }
+}
+
+fn convert(v: libsql::Value) -> rusqlite::types::Value {
+    match v {
+        libsql::Value::Null => rusqlite::types::Value::Null,
+        libsql::Value::Integer(i) => rusqlite::types::Value::Integer(i),
+        libsql::Value::Real(i) => rusqlite::types::Value::Real(i),
+        libsql::Value::Text(i) => rusqlite::types::Value::Text(i),
+        libsql::Value::Blob(i) => rusqlite::types::Value::Blob(i),
+    }
+}
+
+pub fn bind_params(stmt: &mut Statement<'_>, params: libsql::params::Params) -> Result<()> {
+    match params {
+        libsql::params::Params::None => {}
+        libsql::params::Params::Positional(params) => {
+            for (idx, p) in params.into_iter().enumerate() {
+                stmt.raw_bind_parameter(idx + 1, convert(p))?;
+            }
+        }
+        libsql::params::Params::Named(params) => {
+            for (name, v) in params.into_iter() {
+                let Some(idx) = stmt.parameter_index(&name)? else {
+                    return Err(Error::Other("invalid parameter".into()));
+                };
+                stmt.raw_bind_parameter(idx, convert(v))?;
+            }
+        }
+    };
+
+    Ok(())
 }
 
 impl Debug for Connection {
