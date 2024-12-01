@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use tokio::task::JoinHandle;
-use tokio_rusqlite::{params, Connection, Result};
+use tokio_rusqlite::{Connection, Result};
 
 #[derive(Debug)]
 struct Person {
@@ -73,7 +73,7 @@ fn add_steven_task(conn: Connection) -> JoinHandle<()> {
         conn.call(move |conn| {
             conn.execute(
                 "INSERT INTO person (name, data) VALUES (?1, ?2)",
-                params![steven.name, steven.data],
+                rusqlite::params![steven.name, steven.data],
             )
             .map_err(|e| e.into())
         })
@@ -93,7 +93,7 @@ fn add_bob_task(conn: Connection) -> JoinHandle<()> {
         conn.call(move |conn| {
             conn.execute(
                 "INSERT INTO person (name, data) VALUES (?1, ?2)",
-                params![bob.name, bob.data],
+                rusqlite::params![bob.name, bob.data],
             )
             .map_err(|e| e.into())
         })

@@ -251,7 +251,7 @@ async fn test_ergonomic_errors() -> Result<()> {
 }
 
 #[tokio::test]
-async fn call_libsql_query() {
+async fn test_call_libsql_query() {
     let conn = Connection::open_in_memory().await.unwrap();
 
     let result = conn
@@ -332,6 +332,62 @@ async fn call_libsql_query() {
         .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows.0.get(0).unwrap().get::<i64>(0), Ok(17));
+}
+
+#[tokio::test]
+async fn test_params() {
+    let conn = Connection::open_in_memory().await.unwrap();
+
+    conn.call(|conn| {
+        conn.execute(
+            "CREATE TABLE person(id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
+            [],
+        )
+        .map_err(|e| e.into())
+    })
+    .await
+    .unwrap();
+
+    conn.query2(
+        "INSERT INTO person (id, name) VALUES (:id, :name)",
+        [
+            (":id", Value::Integer(1)),
+            (":name", Value::Text("Alice".to_string())),
+        ],
+    )
+    .await
+    .unwrap();
+
+    conn.query2(
+        "INSERT INTO person (id, name) VALUES (:id, :name)",
+        named_params! {
+            ":id": 3,
+            ":name": "Eve",
+        }
+    )
+    .await
+    .unwrap();
+
+    conn.query2(
+        "INSERT INTO person (id, name) VALUES ($1, $2)",
+        [Value::Integer(2), Value::Text("Bob".to_string())],
+    )
+    .await
+    .unwrap();
+
+    conn.query2(
+        "INSERT INTO person (id, name) VALUES ($1, $2)",
+        params!(4, "Jay"),
+    )
+    .await
+    .unwrap();
+
+    let rows = conn
+        .query2("SELECT COUNT(*) FROM person", ())
+        .await
+        .unwrap();
+
+    assert_eq!(rows.0.get(0).unwrap().get::<i64>(0), Ok(4));
 }
 
 // The rest is boilerplate, not really that important

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use tokio_rusqlite::{params, Connection, Result};
+use tokio_rusqlite::{Connection, Result};
 
 #[derive(Debug)]
 struct Person {
@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
 
             conn.execute(
                 "INSERT INTO person (name, data) VALUES (?1, ?2)",
-                params![steven.name, steven.data],
+                rusqlite::params![steven.name, steven.data],
             )?;
 
             let mut stmt = conn.prepare("SELECT id, name, data FROM person")?;

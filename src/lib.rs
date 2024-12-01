@@ -49,7 +49,7 @@
 //!
 //!             conn.execute(
 //!                 "INSERT INTO person (name, data) VALUES (?1, ?2)",
-//!                 params![steven.name, steven.data],
+//!                 rusqlite::params![steven.name, steven.data],
 //!             )?;
 //!
 //!             let mut stmt = conn.prepare("SELECT id, name, data FROM person")?;
@@ -95,6 +95,7 @@
     unreachable_pub
 )]
 
+pub mod params;
 #[cfg(test)]
 mod tests;
 
@@ -108,9 +109,31 @@ use std::{
 };
 use tokio::sync::oneshot::{self};
 
+pub use crate::params::Params;
+pub use rusqlite::types::Value;
 pub use rusqlite::*;
 
-const BUG_TEXT: &str = "bug in tokio-rusqlite, please report";
+#[macro_export]
+macro_rules! params {
+    () => {
+        &[] as &[&(dyn $crate::ToSql + Send + Sync)]
+    };
+    ($($param:expr),+ $(,)?) => {
+        &[$(&$param as &(dyn $crate::ToSql + Send + Sync)),+] as &[&(dyn $crate::ToSql + Send + Sync)]
+    };
+}
+
+#[macro_export]
+macro_rules! named_params {
+    () => {
+        &[] as &[(&str, &(dyn $crate::ToSql + Send + Sync))]
+    };
+    // Note: It's a lot more work to support this as part of the same macro as
+    // `params!`, unfortunately.
+    ($($param_name:literal: $param_val:expr),+ $(,)?) => {
+        &[$(($param_name, &$param_val as &(dyn $crate::ToSql + Send + Sync))),+] as &[(&str, &(dyn $crate::ToSql + Send + Sync))]
+    };
+}
 
 #[derive(Debug)]
 /// Represents the errors specific for this library.
@@ -185,7 +208,7 @@ pub struct Column {
 #[derive(Debug)]
 pub struct Rows(Vec<Row>, Arc<Vec<Column>>);
 
-fn columns(stmt: &rusqlite::Statement<'_>) -> Vec<Column> {
+fn columns(stmt: &Statement<'_>) -> Vec<Column> {
     return stmt
         .columns()
         .into_iter()
@@ -240,27 +263,27 @@ impl Rows {
                 rusqlite::Error::InvalidColumnType(
                     idx,
                     self.column_name(idx).unwrap_or("?").to_string(),
-                    rusqlite::types::Type::Null,
+                    types::Type::Null,
                 )
             });
         }
         return Err(rusqlite::Error::InvalidColumnType(
             idx,
             self.column_name(idx).unwrap_or("?").to_string(),
-            rusqlite::types::Type::Null,
+            types::Type::Null,
         ));
     }
 }
 
 #[derive(Debug)]
-pub struct Row(Vec<rusqlite::types::Value>, Arc<Vec<Column>>);
+pub struct Row(Vec<types::Value>, Arc<Vec<Column>>);
 
 impl Row {
     pub fn from_row(row: &rusqlite::Row, cols: Option<Arc<Vec<Column>>>) -> rusqlite::Result<Self> {
         let columns = cols.unwrap_or_else(|| Arc::new(columns(row.as_ref())));
 
         let count = columns.len();
-        let mut values = Vec::<rusqlite::types::Value>::with_capacity(count);
+        let mut values = Vec::<types::Value>::with_capacity(count);
         for idx in 0..count {
             values.push(row.get_ref(idx)?.into());
         }
@@ -268,18 +291,18 @@ impl Row {
         Ok(Self(values, columns))
     }
 
-    pub fn get<T>(&self, idx: usize) -> rusqlite::types::FromSqlResult<T>
+    pub fn get<T>(&self, idx: usize) -> types::FromSqlResult<T>
     where
-        T: rusqlite::types::FromSql,
+        T: types::FromSql,
     {
         let val = self
             .0
             .get(idx)
-            .ok_or_else(|| rusqlite::types::FromSqlError::Other("Index out of bounds".into()))?;
+            .ok_or_else(|| types::FromSqlError::Other("Index out of bounds".into()))?;
         T::column_result(val.into())
     }
 
-    pub fn get_value(&self, idx: usize) -> Result<rusqlite::types::Value> {
+    pub fn get_value(&self, idx: usize) -> Result<types::Value> {
         self.0
             .get(idx)
             .ok_or_else(|| Error::Other("Index out of bounds".into()))
@@ -479,6 +502,18 @@ impl Connection {
             .await;
     }
 
+    pub async fn query2(&self, sql: &str, params: impl Params + Send + 'static) -> Result<Rows> {
+        let params = params;
+        let sql = sql.to_string();
+        return self
+            .call(move |conn: &mut rusqlite::Connection| {
+                let mut stmt = conn.prepare(&sql)?;
+                params.bind(&mut stmt)?;
+                Ok(Rows::from_rows(stmt.raw_query())?)
+            })
+            .await;
+    }
+
     pub async fn query_row(
         &self,
         sql: &str,
@@ -641,13 +676,13 @@ impl Connection {
     }
 }
 
-fn convert(v: libsql::Value) -> rusqlite::types::Value {
+fn convert(v: libsql::Value) -> types::Value {
     match v {
-        libsql::Value::Null => rusqlite::types::Value::Null,
-        libsql::Value::Integer(i) => rusqlite::types::Value::Integer(i),
-        libsql::Value::Real(i) => rusqlite::types::Value::Real(i),
-        libsql::Value::Text(i) => rusqlite::types::Value::Text(i),
-        libsql::Value::Blob(i) => rusqlite::types::Value::Blob(i),
+        libsql::Value::Null => types::Value::Null,
+        libsql::Value::Integer(i) => types::Value::Integer(i),
+        libsql::Value::Real(i) => types::Value::Real(i),
+        libsql::Value::Text(i) => types::Value::Text(i),
+        libsql::Value::Blob(i) => types::Value::Blob(i),
     }
 }
 
@@ -737,3 +772,5 @@ fn event_loop(mut conn: rusqlite::Connection, receiver: Receiver<Message>) {
         }
     }
 }
+
+const BUG_TEXT: &str = "bug in tokio-rusqlite, please report";
