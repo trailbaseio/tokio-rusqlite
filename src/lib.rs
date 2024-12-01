@@ -231,11 +231,24 @@ impl Rows {
         self.1.get(idx).map(|c| c.name.as_str())
     }
 
-    pub fn column_type(&self, idx: usize) -> libsql::Result<libsql::ValueType> {
+    pub fn column_type(
+        &self,
+        idx: usize,
+    ) -> std::result::Result<libsql::ValueType, rusqlite::Error> {
         if let Some(c) = self.1.get(idx) {
-            return c.decl_type.ok_or(libsql::Error::InvalidColumnType);
+            return c.decl_type.ok_or_else(|| {
+                rusqlite::Error::InvalidColumnType(
+                    idx,
+                    self.column_name(idx).unwrap_or("?").to_string(),
+                    rusqlite::types::Type::Null,
+                )
+            });
         }
-        Err(libsql::Error::InvalidColumnType)
+        return Err(rusqlite::Error::InvalidColumnType(
+            idx,
+            self.column_name(idx).unwrap_or("?").to_string(),
+            rusqlite::types::Type::Null,
+        ));
     }
 }
 
@@ -283,13 +296,6 @@ impl Row {
 
     pub fn column_name(&self, idx: usize) -> Option<&str> {
         self.1.get(idx).map(|c| c.name.as_str())
-    }
-
-    pub fn column_type(&self, idx: usize) -> libsql::Result<libsql::ValueType> {
-        if let Some(c) = self.1.get(idx) {
-            return c.decl_type.ok_or(libsql::Error::InvalidColumnType);
-        }
-        Err(libsql::Error::InvalidColumnType)
     }
 }
 
