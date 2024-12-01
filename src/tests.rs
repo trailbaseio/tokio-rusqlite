@@ -320,11 +320,13 @@ async fn call_libsql_query() {
     assert_eq!(person.name, "baz");
 
     let rows = conn
-        .execute_batch(r#"
+        .execute_batch(
+            r#"
             CREATE TABLE foo (id INTEGER) STRICT;
             INSERT INTO foo (id) VALUES (17);
             SELECT * FROM foo;
-        "#)
+        "#,
+        )
         .await
         .unwrap()
         .unwrap();

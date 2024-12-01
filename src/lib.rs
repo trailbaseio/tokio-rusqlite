@@ -418,6 +418,19 @@ impl Connection {
         receiver.await.map_err(|_| Error::ConnectionClosed)?
     }
 
+    pub fn call_and_forget<F>(&self, function: F) -> Result<()>
+    where
+        F: FnOnce(&mut rusqlite::Connection) + 'static + Send,
+    {
+        self.sender
+            .send(Message::Execute(Box::new(move |conn| {
+                function(conn);
+            })))
+            .map_err(|_| Error::ConnectionClosed)?;
+
+        return Ok(());
+    }
+
     /// Call a function in background thread and get the result
     /// asynchronously.
     ///
