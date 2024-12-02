@@ -100,6 +100,8 @@ pub mod params;
 mod tests;
 
 use crossbeam_channel::{Receiver, Sender};
+pub use rusqlite::types::{ToSqlOutput, Value};
+pub use rusqlite::*;
 use std::{
     fmt::{self, Debug, Display},
     path::Path,
@@ -110,30 +112,38 @@ use std::{
 use tokio::sync::oneshot::{self};
 
 pub use crate::params::Params;
-pub use rusqlite::types::Value;
-pub use rusqlite::*;
 
 #[macro_export]
 macro_rules! params {
     () => {
-        &[] as &[&(dyn $crate::ToSql + Send + Sync)]
+        [] as [$crate::params::ToSqlType]
     };
     ($($param:expr),+ $(,)?) => {
-        &[$(&$param as &(dyn $crate::ToSql + Send + Sync)),+] as &[&(dyn $crate::ToSql + Send + Sync)]
+        [$(Into::<$crate::params::ToSqlType>::into($param)),+]
     };
 }
 
 #[macro_export]
 macro_rules! named_params {
     () => {
-        &[] as &[(&str, &(dyn $crate::ToSql + Send + Sync))]
+        [] as [(&str, $crate::params::ToSqlType)]
     };
-    // Note: It's a lot more work to support this as part of the same macro as
-    // `params!`, unfortunately.
     ($($param_name:literal: $param_val:expr),+ $(,)?) => {
-        &[$(($param_name, &$param_val as &(dyn $crate::ToSql + Send + Sync))),+] as &[(&str, &(dyn $crate::ToSql + Send + Sync))]
+        [$(($param_name as &str, Into::<$crate::params::ToSqlType>::into($param_val))),+]
     };
 }
+
+// #[macro_export]
+// macro_rules! named_params {
+//     () => {
+//         [] as [(&str, &(dyn $crate::ToSql + Send))]
+//     };
+//     // Note: It's a lot more work to support this as part of the same macro as
+//     // `params!`, unfortunately.
+//     ($($param_name:literal: $param_val:expr),+ $(,)?) => {
+//         [$(($param_name as &str, &$param_val as &(dyn $crate::ToSql + Send))),+]
+//     };
+// }
 
 #[derive(Debug)]
 /// Represents the errors specific for this library.

@@ -336,6 +336,11 @@ async fn test_call_libsql_query() {
 
 #[tokio::test]
 async fn test_params() {
+    let _ = named_params! {
+        ":null": None::<String>,
+        ":text": Some("test".to_string()),
+    };
+
     let conn = Connection::open_in_memory().await.unwrap();
 
     conn.call(|conn| {
@@ -358,11 +363,12 @@ async fn test_params() {
     .await
     .unwrap();
 
+    let id = 3;
     conn.query(
         "INSERT INTO person (id, name) VALUES (:id, :name)",
         named_params! {
-            ":id": 3,
-            ":name": "Eve",
+            ":id": id,
+            ":name": Value::Text("Eve".to_string()),
         },
     )
     .await
