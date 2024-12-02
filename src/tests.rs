@@ -293,12 +293,12 @@ async fn test_call_libsql_query() {
     ));
     assert_eq!(rows.column_name(1).unwrap(), "name");
 
-    conn.execute("UPDATE person SET name = 'baz' WHERE id = $1", [1])
+    conn.execute("UPDATE person SET name = 'baz' WHERE id = $1", (1,))
         .await
         .unwrap();
 
     let row = conn
-        .query_row("SELECT name FROM person WHERE id = $1", [1])
+        .query_row("SELECT name FROM person WHERE id = $1", &[1])
         .await
         .unwrap()
         .unwrap();
@@ -312,7 +312,7 @@ async fn test_call_libsql_query() {
     }
 
     let person = conn
-        .query_value::<Person>("SELECT * FROM person WHERE id = $1", [1])
+        .query_value::<Person>("SELECT * FROM person WHERE id = $1", &[1])
         .await
         .unwrap()
         .unwrap();
@@ -348,7 +348,7 @@ async fn test_params() {
     .await
     .unwrap();
 
-    conn.query2(
+    conn.query(
         "INSERT INTO person (id, name) VALUES (:id, :name)",
         [
             (":id", Value::Integer(1)),
@@ -358,34 +358,31 @@ async fn test_params() {
     .await
     .unwrap();
 
-    conn.query2(
+    conn.query(
         "INSERT INTO person (id, name) VALUES (:id, :name)",
         named_params! {
             ":id": 3,
             ":name": "Eve",
-        }
+        },
     )
     .await
     .unwrap();
 
-    conn.query2(
+    conn.query(
         "INSERT INTO person (id, name) VALUES ($1, $2)",
         [Value::Integer(2), Value::Text("Bob".to_string())],
     )
     .await
     .unwrap();
 
-    conn.query2(
+    conn.query(
         "INSERT INTO person (id, name) VALUES ($1, $2)",
         params!(4, "Jay"),
     )
     .await
     .unwrap();
 
-    let rows = conn
-        .query2("SELECT COUNT(*) FROM person", ())
-        .await
-        .unwrap();
+    let rows = conn.query("SELECT COUNT(*) FROM person", ()).await.unwrap();
 
     assert_eq!(rows.0.get(0).unwrap().get::<i64>(0), Ok(4));
 }

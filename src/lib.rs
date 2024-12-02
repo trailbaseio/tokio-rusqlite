@@ -486,30 +486,14 @@ impl Connection {
     }
 
     /// Adapter method converting libsql parameters.
-    pub async fn query(&self, sql: &str, params: impl libsql::params::IntoParams) -> Result<Rows> {
-        let params = params
-            .into_params()
-            .map_err(|err| Error::Other(err.into()))?;
-
-        let sql = sql.to_string();
-        return self
-            .call(move |conn: &mut rusqlite::Connection| {
-                let mut stmt = conn.prepare(&sql)?;
-                bind_params(&mut stmt, params)?;
-                let rows = stmt.raw_query();
-                Ok(Rows::from_rows(rows)?)
-            })
-            .await;
-    }
-
-    pub async fn query2(&self, sql: &str, params: impl Params + Send + 'static) -> Result<Rows> {
-        let params = params;
+    pub async fn query(&self, sql: &str, params: impl Params + Send + 'static) -> Result<Rows> {
         let sql = sql.to_string();
         return self
             .call(move |conn: &mut rusqlite::Connection| {
                 let mut stmt = conn.prepare(&sql)?;
                 params.bind(&mut stmt)?;
-                Ok(Rows::from_rows(stmt.raw_query())?)
+                let rows = stmt.raw_query();
+                Ok(Rows::from_rows(rows)?)
             })
             .await;
     }
@@ -517,17 +501,13 @@ impl Connection {
     pub async fn query_row(
         &self,
         sql: &str,
-        params: impl libsql::params::IntoParams,
+        params: impl Params + Send + 'static,
     ) -> Result<Option<Row>> {
-        let params = params
-            .into_params()
-            .map_err(|err| Error::Other(err.into()))?;
-
         let sql = sql.to_string();
         return self
             .call(move |conn: &mut rusqlite::Connection| {
                 let mut stmt = conn.prepare(&sql)?;
-                bind_params(&mut stmt, params)?;
+                params.bind(&mut stmt)?;
                 let mut rows = stmt.raw_query();
                 if let Some(row) = rows.next()? {
                     return Ok(Some(Row::from_row(row, None)?));
@@ -540,17 +520,13 @@ impl Connection {
     pub async fn query_value<T: serde::de::DeserializeOwned + Send + 'static>(
         &self,
         sql: &str,
-        params: impl libsql::params::IntoParams,
+        params: impl Params + Send + 'static,
     ) -> Result<Option<T>> {
-        let params = params
-            .into_params()
-            .map_err(|err| Error::Other(err.into()))?;
-
         let sql = sql.to_string();
         return self
             .call(move |conn: &mut rusqlite::Connection| {
                 let mut stmt = conn.prepare(&sql)?;
-                bind_params(&mut stmt, params)?;
+                params.bind(&mut stmt)?;
                 let mut rows = stmt.raw_query();
                 if let Some(row) = rows.next()? {
                     return Ok(Some(
@@ -565,17 +541,13 @@ impl Connection {
     pub async fn query_values<T: serde::de::DeserializeOwned + Send + 'static>(
         &self,
         sql: &str,
-        params: impl libsql::params::IntoParams,
+        params: impl Params + Send + 'static,
     ) -> Result<Vec<T>> {
-        let params = params
-            .into_params()
-            .map_err(|err| Error::Other(err.into()))?;
-
         let sql = sql.to_string();
         return self
             .call(move |conn: &mut rusqlite::Connection| {
                 let mut stmt = conn.prepare(&sql)?;
-                bind_params(&mut stmt, params)?;
+                params.bind(&mut stmt)?;
                 let mut rows = stmt.raw_query();
 
                 let mut values = vec![];
@@ -590,20 +562,12 @@ impl Connection {
     }
 
     /// Adapter method converting libsql parameters.
-    pub async fn execute(
-        &self,
-        sql: &str,
-        params: impl libsql::params::IntoParams,
-    ) -> Result<usize> {
-        let params = params
-            .into_params()
-            .map_err(|err| Error::Other(err.into()))?;
-
+    pub async fn execute(&self, sql: &str, params: impl Params + Send + 'static) -> Result<usize> {
         let sql = sql.to_string();
         return self
             .call(move |conn: &mut rusqlite::Connection| {
                 let mut stmt = conn.prepare(&sql)?;
-                bind_params(&mut stmt, params)?;
+                params.bind(&mut stmt)?;
                 Ok(stmt.raw_execute()?)
             })
             .await;
@@ -684,6 +648,10 @@ fn convert(v: libsql::Value) -> types::Value {
         libsql::Value::Text(i) => types::Value::Text(i),
         libsql::Value::Blob(i) => types::Value::Blob(i),
     }
+}
+
+pub fn convert_libsql(v: libsql::Value) -> types::Value {
+    return convert(v);
 }
 
 pub fn bind_params(stmt: &mut Statement<'_>, params: libsql::params::Params) -> Result<()> {
