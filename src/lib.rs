@@ -133,18 +133,6 @@ macro_rules! named_params {
     };
 }
 
-// #[macro_export]
-// macro_rules! named_params {
-//     () => {
-//         [] as [(&str, &(dyn $crate::ToSql + Send))]
-//     };
-//     // Note: It's a lot more work to support this as part of the same macro as
-//     // `params!`, unfortunately.
-//     ($($param_name:literal: $param_val:expr),+ $(,)?) => {
-//         [$(($param_name as &str, &$param_val as &(dyn $crate::ToSql + Send))),+]
-//     };
-// }
-
 #[derive(Debug)]
 /// Represents the errors specific for this library.
 #[non_exhaustive]
@@ -384,75 +372,6 @@ impl Connection {
             .map_err(Error::Rusqlite)
     }
 
-    /// Open a new connection to a SQLite database.
-    ///
-    /// [Database Connection](http://www.sqlite.org/c3ref/open.html) for a
-    /// description of valid flag combinations.
-    ///
-    /// # Failure
-    ///
-    /// Will return `Err` if `path` cannot be converted to a C-compatible
-    /// string or if the underlying SQLite open call fails.
-    pub async fn open_with_flags<P: AsRef<Path>>(path: P, flags: OpenFlags) -> Result<Self> {
-        let path = path.as_ref().to_owned();
-        start(move || rusqlite::Connection::open_with_flags(path, flags))
-            .await
-            .map_err(Error::Rusqlite)
-    }
-
-    /// Open a new connection to a SQLite database using the specific flags
-    /// and vfs name.
-    ///
-    /// [Database Connection](http://www.sqlite.org/c3ref/open.html) for a
-    /// description of valid flag combinations.
-    ///
-    /// # Failure
-    ///
-    /// Will return `Err` if either `path` or `vfs` cannot be converted to a
-    /// C-compatible string or if the underlying SQLite open call fails.
-    pub async fn open_with_flags_and_vfs<P: AsRef<Path>>(
-        path: P,
-        flags: OpenFlags,
-        vfs: &str,
-    ) -> Result<Self> {
-        let path = path.as_ref().to_owned();
-        let vfs = vfs.to_owned();
-        start(move || rusqlite::Connection::open_with_flags_and_vfs(path, flags, &vfs))
-            .await
-            .map_err(Error::Rusqlite)
-    }
-
-    /// Open a new connection to an in-memory SQLite database.
-    ///
-    /// [Database Connection](http://www.sqlite.org/c3ref/open.html) for a
-    /// description of valid flag combinations.
-    ///
-    /// # Failure
-    ///
-    /// Will return `Err` if the underlying SQLite open call fails.
-    pub async fn open_in_memory_with_flags(flags: OpenFlags) -> Result<Self> {
-        start(move || rusqlite::Connection::open_in_memory_with_flags(flags))
-            .await
-            .map_err(Error::Rusqlite)
-    }
-
-    /// Open a new connection to an in-memory SQLite database using the
-    /// specific flags and vfs name.
-    ///
-    /// [Database Connection](http://www.sqlite.org/c3ref/open.html) for a
-    /// description of valid flag combinations.
-    ///
-    /// # Failure
-    ///
-    /// Will return `Err` if `vfs` cannot be converted to a C-compatible
-    /// string or if the underlying SQLite open call fails.
-    pub async fn open_in_memory_with_flags_and_vfs(flags: OpenFlags, vfs: &str) -> Result<Self> {
-        let vfs = vfs.to_owned();
-        start(move || rusqlite::Connection::open_in_memory_with_flags_and_vfs(flags, &vfs))
-            .await
-            .map_err(Error::Rusqlite)
-    }
-
     /// Call a function in background thread and get the result
     /// asynchronously.
     ///
@@ -672,15 +591,6 @@ impl Connection {
 impl Debug for Connection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Connection").finish()
-    }
-}
-
-impl From<rusqlite::Connection> for Connection {
-    fn from(conn: rusqlite::Connection) -> Self {
-        let (sender, receiver) = crossbeam_channel::unbounded::<Message>();
-        thread::spawn(move || event_loop(conn, receiver));
-
-        Self { sender }
     }
 }
 
