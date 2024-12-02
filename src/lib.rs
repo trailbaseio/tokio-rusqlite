@@ -208,11 +208,35 @@ pub struct Connection {
     sender: Sender<Message>,
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum ValueType {
+    Integer = 1,
+    Real,
+    Text,
+    Blob,
+    Null,
+}
+
+impl FromStr for ValueType {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<ValueType, Self::Err> {
+        match s {
+            "TEXT" => Ok(ValueType::Text),
+            "INTEGER" => Ok(ValueType::Integer),
+            "BLOB" => Ok(ValueType::Blob),
+            "NULL" => Ok(ValueType::Null),
+            "REAL" => Ok(ValueType::Real),
+            _ => Err(()),
+        }
+    }
+}
+
 #[allow(unused)]
 #[derive(Debug)]
 pub struct Column {
     name: String,
-    decl_type: Option<libsql::ValueType>,
+    decl_type: Option<ValueType>,
 }
 
 #[derive(Debug)]
@@ -224,9 +248,7 @@ fn columns(stmt: &Statement<'_>) -> Vec<Column> {
         .into_iter()
         .map(|c| Column {
             name: c.name().to_string(),
-            decl_type: c
-                .decl_type()
-                .and_then(|s| libsql::ValueType::from_str(s).ok()),
+            decl_type: c.decl_type().and_then(|s| ValueType::from_str(s).ok()),
         })
         .collect();
 }
@@ -264,10 +286,7 @@ impl Rows {
         self.1.get(idx).map(|c| c.name.as_str())
     }
 
-    pub fn column_type(
-        &self,
-        idx: usize,
-    ) -> std::result::Result<libsql::ValueType, rusqlite::Error> {
+    pub fn column_type(&self, idx: usize) -> std::result::Result<ValueType, rusqlite::Error> {
         if let Some(c) = self.1.get(idx) {
             return c.decl_type.ok_or_else(|| {
                 rusqlite::Error::InvalidColumnType(
@@ -495,7 +514,7 @@ impl Connection {
         receiver.await.expect(BUG_TEXT)
     }
 
-    /// Adapter method converting libsql parameters.
+    /// Query SQL statement.
     pub async fn query(&self, sql: &str, params: impl Params + Send + 'static) -> Result<Rows> {
         let sql = sql.to_string();
         return self
@@ -571,7 +590,7 @@ impl Connection {
             .await;
     }
 
-    /// Adapter method converting libsql parameters.
+    /// Execute SQL statement.
     pub async fn execute(&self, sql: &str, params: impl Params + Send + 'static) -> Result<usize> {
         let sql = sql.to_string();
         return self
@@ -583,7 +602,7 @@ impl Connection {
             .await;
     }
 
-    /// Adapter method converting libsql parameters.
+    /// Batch execute SQL statements and return rows of last statement.
     pub async fn execute_batch(&self, sql: &str) -> Result<Option<Rows>> {
         let sql = sql.to_string();
         return self
@@ -648,41 +667,6 @@ impl Connection {
 
         result.unwrap().map_err(|e| Error::Close((self, e)))
     }
-}
-
-fn convert(v: libsql::Value) -> types::Value {
-    match v {
-        libsql::Value::Null => types::Value::Null,
-        libsql::Value::Integer(i) => types::Value::Integer(i),
-        libsql::Value::Real(i) => types::Value::Real(i),
-        libsql::Value::Text(i) => types::Value::Text(i),
-        libsql::Value::Blob(i) => types::Value::Blob(i),
-    }
-}
-
-pub fn convert_libsql(v: libsql::Value) -> types::Value {
-    return convert(v);
-}
-
-pub fn bind_params(stmt: &mut Statement<'_>, params: libsql::params::Params) -> Result<()> {
-    match params {
-        libsql::params::Params::None => {}
-        libsql::params::Params::Positional(params) => {
-            for (idx, p) in params.into_iter().enumerate() {
-                stmt.raw_bind_parameter(idx + 1, convert(p))?;
-            }
-        }
-        libsql::params::Params::Named(params) => {
-            for (name, v) in params.into_iter() {
-                let Some(idx) = stmt.parameter_index(&name)? else {
-                    continue;
-                };
-                stmt.raw_bind_parameter(idx, convert(v))?;
-            }
-        }
-    };
-
-    Ok(())
 }
 
 impl Debug for Connection {

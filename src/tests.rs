@@ -268,29 +268,23 @@ async fn test_call_libsql_query() {
 
     conn.query(
         "INSERT INTO person (id, name) VALUES ($1, $2)",
-        libsql::params!(0, "foo"),
+        params!(0, "foo"),
     )
     .await
     .unwrap();
     conn.query(
         "INSERT INTO person (id, name) VALUES (:id, :name)",
-        libsql::named_params! {":id": 1, ":name": "bar"},
+        named_params! {":id": 1, ":name": "bar"},
     )
     .await
     .unwrap();
 
     let rows = conn.query("SELECT * FROM person", ()).await.unwrap();
     assert_eq!(2, rows.len());
-    assert!(matches!(
-        rows.column_type(0).unwrap(),
-        libsql::ValueType::Integer
-    ));
+    assert!(matches!(rows.column_type(0).unwrap(), ValueType::Integer));
     assert_eq!(rows.column_name(0).unwrap(), "id");
 
-    assert!(matches!(
-        rows.column_type(1).unwrap(),
-        libsql::ValueType::Text
-    ));
+    assert!(matches!(rows.column_type(1).unwrap(), ValueType::Text));
     assert_eq!(rows.column_name(1).unwrap(), "name");
 
     conn.execute("UPDATE person SET name = 'baz' WHERE id = $1", (1,))
