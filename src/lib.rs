@@ -100,13 +100,16 @@ pub mod params;
 mod tests;
 
 use crossbeam_channel::{Receiver, Sender};
+use parking_lot::Mutex;
 pub use rusqlite::types::{ToSqlOutput, Value};
 pub use rusqlite::*;
+use std::cell::OnceCell;
+use std::rc::Rc;
 use std::{
     fmt::{self, Debug, Display},
     path::Path,
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     thread,
 };
 use tokio::sync::oneshot::{self};
@@ -188,12 +191,6 @@ type CallFn = Box<dyn FnOnce(&mut rusqlite::Connection) + Send + 'static>;
 enum Message {
     Execute(CallFn),
     Close(oneshot::Sender<std::result::Result<(), rusqlite::Error>>),
-}
-
-/// A handle to call functions in background thread.
-#[derive(Clone)]
-pub struct Connection {
-    sender: Sender<Message>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -339,6 +336,14 @@ impl Row {
     }
 }
 
+/// A handle to call functions in background thread.
+#[derive(Clone)]
+pub struct Connection {
+    fun: Arc<dyn Fn() -> rusqlite::Connection + Send + Sync>,
+
+    conn: OnceLock<Arc<Mutex<rusqlite::Connection>>>,
+}
+
 impl Connection {
     /// Open a new connection to a SQLite database.
     ///
@@ -350,15 +355,21 @@ impl Connection {
     ///
     /// Will return `Err` if `path` cannot be converted to a C-compatible
     /// string or if the underlying SQLite open call fails.
-    pub async fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let path = path.as_ref().to_owned();
-        start(move || rusqlite::Connection::open(path))
-            .await
-            .map_err(Error::Rusqlite)
-    }
+    // pub async fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+    //     let path = path.as_ref().to_owned();
+    //     start(move || rusqlite::Connection::open(path))
+    //         .await
+    //         .map_err(Error::Rusqlite)
+    // }
 
-    pub async fn from_conn(conn: rusqlite::Connection) -> Result<Self> {
-        start(move || Ok(conn)).await.map_err(Error::Rusqlite)
+    pub async fn from_conn(f: Arc<dyn Fn() -> rusqlite::Connection + Send + Sync>) -> Result<Self> {
+        let s = Self {
+            fun: f,
+            conn: OnceLock::new(),
+        };
+        s._call(|conn| Ok(()));
+        return Ok(s);
+        // start(move || Ok(f())).await.map_err(Error::Rusqlite)
     }
 
     /// Open a new connection to an in-memory SQLite database.
@@ -367,9 +378,65 @@ impl Connection {
     ///
     /// Will return `Err` if the underlying SQLite open call fails.
     pub async fn open_in_memory() -> Result<Self> {
-        start(rusqlite::Connection::open_in_memory)
-            .await
-            .map_err(Error::Rusqlite)
+        let s = Self {
+            fun: Arc::new(|| rusqlite::Connection::open_in_memory().unwrap()),
+            conn: OnceLock::new(),
+        };
+        s._call(|conn| Ok(()));
+        return Ok(s);
+
+        // start(rusqlite::Connection::open_in_memory)
+        //     .await
+        //     .map_err(Error::Rusqlite)
+    }
+
+    // #[cfg(debug_assertions)]
+    // #[inline]
+    // fn _conn(&self) -> parking_lot::MutexGuard<'_, rusqlite::Connection> {
+    //     let conn = self.conn.get_or_init(|| Arc::new(Mutex::new((self.fun)())));
+    //     return conn.lock();
+    // }
+    //
+    // #[cfg(not(debug_assertions))]
+    // #[inline]
+    // fn _conn(&self) -> Rc<rusqlite::Connection> {
+    //     thread_local! {
+    //         static CELL : OnceCell<Rc<rusqlite::Connection>> = OnceCell::new();
+    //     }
+    //
+    //     let conn: Rc<rusqlite::Connection> = CELL.with(|cell| {
+    //         return cell.get_or_init(|| Rc::new((self.fun)())).clone();
+    //     });
+    //
+    //     return conn;
+    // }
+
+    #[cfg(not(debug_assertions))]
+    #[inline]
+    fn _call<T, F>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut rusqlite::Connection) -> Result<T>,
+    {
+        use std::cell::{OnceCell, RefCell};
+        thread_local! {
+          static CELL : OnceCell<RefCell<rusqlite::Connection>> = OnceCell::new();
+        }
+
+        return CELL.with(|cell| {
+            let c = cell.get_or_init(|| RefCell::new((self.fun)()));
+            let conn: &mut rusqlite::Connection = &mut c.borrow_mut();
+            return f(conn);
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    #[inline]
+    fn _call<T, F>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut rusqlite::Connection) -> Result<T>,
+    {
+        let conn = self.conn.get_or_init(|| Arc::new(Mutex::new((self.fun)())));
+        return f(&mut conn.lock());
     }
 
     /// Call a function in background thread and get the result
@@ -378,35 +445,38 @@ impl Connection {
     /// # Failure
     ///
     /// Will return `Err` if the database connection has been closed.
-    pub async fn call<F, R>(&self, function: F) -> Result<R>
+    #[inline]
+    pub fn call<F, R>(&self, function: F) -> Result<R>
     where
         F: FnOnce(&mut rusqlite::Connection) -> Result<R> + 'static + Send,
         R: Send + 'static,
     {
-        let (sender, receiver) = oneshot::channel::<Result<R>>();
-
-        self.sender
-            .send(Message::Execute(Box::new(move |conn| {
-                let value = function(conn);
-                let _ = sender.send(value);
-            })))
-            .map_err(|_| Error::ConnectionClosed)?;
-
-        receiver.await.map_err(|_| Error::ConnectionClosed)?
+        return self._call(function);
+        // let (sender, receiver) = oneshot::channel::<Result<R>>();
+        //
+        // self.sender
+        //     .send(Message::Execute(Box::new(move |conn| {
+        //         let value = function(conn);
+        //         let _ = sender.send(value);
+        //     })))
+        //     .map_err(|_| Error::ConnectionClosed)?;
+        //
+        // receiver.await.map_err(|_| Error::ConnectionClosed)?
     }
 
-    pub fn call_and_forget<F>(&self, function: F) -> Result<()>
-    where
-        F: FnOnce(&mut rusqlite::Connection) + 'static + Send,
-    {
-        self.sender
-            .send(Message::Execute(Box::new(move |conn| {
-                function(conn);
-            })))
-            .map_err(|_| Error::ConnectionClosed)?;
-
-        return Ok(());
-    }
+    // pub fn call_and_forget<F>(&self, function: F) -> Result<()>
+    // where
+    //     F: FnOnce(&mut rusqlite::Connection) + 'static + Send,
+    // {
+    //     function(&mut self._conn());
+    //     // self.sender
+    //     //     .send(Message::Execute(Box::new(move |conn| {
+    //     //         function(conn);
+    //     //     })))
+    //     //     .map_err(|_| Error::ConnectionClosed)?;
+    //
+    //     return Ok(());
+    // }
 
     /// Call a function in background thread and get the result
     /// asynchronously.
@@ -416,34 +486,33 @@ impl Connection {
     /// It should be safe if the connection is never explicitly closed (using the [`Connection::close`] call).
     ///
     /// Calling this on a closed connection will cause a `panic`.
-    pub async fn call_unwrap<F, R>(&self, function: F) -> R
-    where
-        F: FnOnce(&mut rusqlite::Connection) -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        let (sender, receiver) = oneshot::channel::<R>();
-
-        self.sender
-            .send(Message::Execute(Box::new(move |conn| {
-                let value = function(conn);
-                let _ = sender.send(value);
-            })))
-            .expect("database connection should be open");
-
-        receiver.await.expect(BUG_TEXT)
-    }
+    // pub fn call_unwrap<F, R>(&self, function: F) -> R
+    // where
+    //     F: FnOnce(&mut rusqlite::Connection) -> R + Send + 'static,
+    //     R: Send + 'static,
+    // {
+    //     return function(&mut self._conn());
+    //     // let (sender, receiver) = oneshot::channel::<R>();
+    //     //
+    //     // self.sender
+    //     //     .send(Message::Execute(Box::new(move |conn| {
+    //     //         let value = function(conn);
+    //     //         let _ = sender.send(value);
+    //     //     })))
+    //     //     .expect("database connection should be open");
+    //     //
+    //     // receiver.await.expect(BUG_TEXT)
+    // }
 
     /// Query SQL statement.
     pub async fn query(&self, sql: &str, params: impl Params + Send + 'static) -> Result<Rows> {
         let sql = sql.to_string();
-        return self
-            .call(move |conn: &mut rusqlite::Connection| {
-                let mut stmt = conn.prepare(&sql)?;
-                params.bind(&mut stmt)?;
-                let rows = stmt.raw_query();
-                Ok(Rows::from_rows(rows)?)
-            })
-            .await;
+        return self._call(move |conn: &mut rusqlite::Connection| {
+            let mut stmt = conn.prepare(&sql)?;
+            params.bind(&mut stmt)?;
+            let rows = stmt.raw_query();
+            Ok(Rows::from_rows(rows)?)
+        });
     }
 
     pub async fn query_row(
@@ -452,17 +521,15 @@ impl Connection {
         params: impl Params + Send + 'static,
     ) -> Result<Option<Row>> {
         let sql = sql.to_string();
-        return self
-            .call(move |conn: &mut rusqlite::Connection| {
-                let mut stmt = conn.prepare(&sql)?;
-                params.bind(&mut stmt)?;
-                let mut rows = stmt.raw_query();
-                if let Some(row) = rows.next()? {
-                    return Ok(Some(Row::from_row(row, None)?));
-                }
-                Ok(None)
-            })
-            .await;
+        return self._call(move |conn: &mut rusqlite::Connection| {
+            let mut stmt = conn.prepare(&sql)?;
+            params.bind(&mut stmt)?;
+            let mut rows = stmt.raw_query();
+            if let Some(row) = rows.next()? {
+                return Ok(Some(Row::from_row(row, None)?));
+            }
+            Ok(None)
+        });
     }
 
     pub async fn query_value<T: serde::de::DeserializeOwned + Send + 'static>(
@@ -471,19 +538,17 @@ impl Connection {
         params: impl Params + Send + 'static,
     ) -> Result<Option<T>> {
         let sql = sql.to_string();
-        return self
-            .call(move |conn: &mut rusqlite::Connection| {
-                let mut stmt = conn.prepare(&sql)?;
-                params.bind(&mut stmt)?;
-                let mut rows = stmt.raw_query();
-                if let Some(row) = rows.next()? {
-                    return Ok(Some(
-                        serde_rusqlite::from_row(row).map_err(|err| Error::Other(err.into()))?,
-                    ));
-                }
-                Ok(None)
-            })
-            .await;
+        return self._call(move |conn: &mut rusqlite::Connection| {
+            let mut stmt = conn.prepare(&sql)?;
+            params.bind(&mut stmt)?;
+            let mut rows = stmt.raw_query();
+            if let Some(row) = rows.next()? {
+                return Ok(Some(
+                    serde_rusqlite::from_row(row).map_err(|err| Error::Other(err.into()))?,
+                ));
+            }
+            Ok(None)
+        });
     }
 
     pub async fn query_values<T: serde::de::DeserializeOwned + Send + 'static>(
@@ -492,64 +557,56 @@ impl Connection {
         params: impl Params + Send + 'static,
     ) -> Result<Vec<T>> {
         let sql = sql.to_string();
-        return self
-            .call(move |conn: &mut rusqlite::Connection| {
-                let mut stmt = conn.prepare(&sql)?;
-                params.bind(&mut stmt)?;
-                let mut rows = stmt.raw_query();
+        return self._call(move |conn: &mut rusqlite::Connection| {
+            let mut stmt = conn.prepare(&sql)?;
+            params.bind(&mut stmt)?;
+            let mut rows = stmt.raw_query();
 
-                let mut values = vec![];
-                while let Some(row) = rows.next()? {
-                    values.push(
-                        serde_rusqlite::from_row(row).map_err(|err| Error::Other(err.into()))?,
-                    );
-                }
-                return Ok(values);
-            })
-            .await;
+            let mut values = vec![];
+            while let Some(row) = rows.next()? {
+                values.push(serde_rusqlite::from_row(row).map_err(|err| Error::Other(err.into()))?);
+            }
+            return Ok(values);
+        });
     }
 
     /// Execute SQL statement.
     pub async fn execute(&self, sql: &str, params: impl Params + Send + 'static) -> Result<usize> {
         let sql = sql.to_string();
-        return self
-            .call(move |conn: &mut rusqlite::Connection| {
-                let mut stmt = conn.prepare(&sql)?;
-                params.bind(&mut stmt)?;
-                Ok(stmt.raw_execute()?)
-            })
-            .await;
+        return self._call(move |conn: &mut rusqlite::Connection| {
+            let mut stmt = conn.prepare(&sql)?;
+            params.bind(&mut stmt)?;
+            Ok(stmt.raw_execute()?)
+        });
     }
 
     /// Batch execute SQL statements and return rows of last statement.
     pub async fn execute_batch(&self, sql: &str) -> Result<Option<Rows>> {
         let sql = sql.to_string();
-        return self
-            .call(move |conn: &mut rusqlite::Connection| {
-                let batch = rusqlite::Batch::new(conn, &sql);
+        return self._call(move |conn: &mut rusqlite::Connection| {
+            let batch = rusqlite::Batch::new(conn, &sql);
 
-                let mut p = batch.peekable();
-                while let Some(iter) = p.next() {
-                    let mut stmt = iter?;
+            let mut p = batch.peekable();
+            while let Some(iter) = p.next() {
+                let mut stmt = iter?;
 
-                    let mut rows = stmt.raw_query();
-                    let row = rows.next()?;
-                    if p.peek().is_none() {
-                        if let Some(row) = row {
-                            let cols: Arc<Vec<Column>> = Arc::new(columns(row.as_ref()));
+                let mut rows = stmt.raw_query();
+                let row = rows.next()?;
+                if p.peek().is_none() {
+                    if let Some(row) = row {
+                        let cols: Arc<Vec<Column>> = Arc::new(columns(row.as_ref()));
 
-                            let mut result = vec![Row::from_row(row, Some(cols.clone()))?];
-                            while let Some(row) = rows.next()? {
-                                result.push(Row::from_row(row, Some(cols.clone()))?);
-                            }
-                            return Ok(Some(Rows(result, cols)));
+                        let mut result = vec![Row::from_row(row, Some(cols.clone()))?];
+                        while let Some(row) = rows.next()? {
+                            result.push(Row::from_row(row, Some(cols.clone()))?);
                         }
-                        return Ok(None);
+                        return Ok(Some(Rows(result, cols)));
                     }
+                    return Ok(None);
                 }
-                return Ok(None);
-            })
-            .await;
+            }
+            return Ok(None);
+        });
     }
 
     /// Close the database connection.
@@ -568,23 +625,24 @@ impl Connection {
     ///
     /// Will return `Err` if the underlying SQLite close call fails.
     pub async fn close(self) -> Result<()> {
-        let (sender, receiver) = oneshot::channel::<std::result::Result<(), rusqlite::Error>>();
-
-        if let Err(crossbeam_channel::SendError(_)) = self.sender.send(Message::Close(sender)) {
-            // If the channel is closed on the other side, it means the connection closed successfully
-            // This is a safeguard against calling close on a `Copy` of the connection
-            return Ok(());
-        }
-
-        let result = receiver.await;
-
-        if result.is_err() {
-            // If we get a RecvError at this point, it also means the channel closed in the meantime
-            // we can assume the connection is closed
-            return Ok(());
-        }
-
-        result.unwrap().map_err(|e| Error::Close((self, e)))
+        return Ok(());
+        // let (sender, receiver) = oneshot::channel::<std::result::Result<(), rusqlite::Error>>();
+        //
+        // if let Err(crossbeam_channel::SendError(_)) = self.sender.send(Message::Close(sender)) {
+        //     // If the channel is closed on the other side, it means the connection closed successfully
+        //     // This is a safeguard against calling close on a `Copy` of the connection
+        //     return Ok(());
+        // }
+        //
+        // let result = receiver.await;
+        //
+        // if result.is_err() {
+        //     // If we get a RecvError at this point, it also means the channel closed in the meantime
+        //     // we can assume the connection is closed
+        //     return Ok(());
+        // }
+        //
+        // result.unwrap().map_err(|e| Error::Close((self, e)))
     }
 }
 
@@ -594,34 +652,34 @@ impl Debug for Connection {
     }
 }
 
-async fn start<F>(open: F) -> rusqlite::Result<Connection>
-where
-    F: FnOnce() -> rusqlite::Result<rusqlite::Connection> + Send + 'static,
-{
-    let (sender, receiver) = crossbeam_channel::unbounded::<Message>();
-    let (result_sender, result_receiver) = oneshot::channel();
-
-    thread::spawn(move || {
-        let conn = match open() {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = result_sender.send(Err(e));
-                return;
-            }
-        };
-
-        if let Err(_e) = result_sender.send(Ok(())) {
-            return;
-        }
-
-        event_loop(conn, receiver);
-    });
-
-    result_receiver
-        .await
-        .expect(BUG_TEXT)
-        .map(|_| Connection { sender })
-}
+// async fn start<F>(open: F) -> rusqlite::Result<Connection>
+// where
+//     F: FnOnce() -> rusqlite::Result<rusqlite::Connection> + Send + 'static,
+// {
+//     let (sender, receiver) = crossbeam_channel::unbounded::<Message>();
+//     let (result_sender, result_receiver) = oneshot::channel();
+//
+//     thread::spawn(move || {
+//         let conn = match open() {
+//             Ok(c) => c,
+//             Err(e) => {
+//                 let _ = result_sender.send(Err(e));
+//                 return;
+//             }
+//         };
+//
+//         if let Err(_e) = result_sender.send(Ok(())) {
+//             return;
+//         }
+//
+//         event_loop(conn, receiver);
+//     });
+//
+//     result_receiver
+//         .await
+//         .expect(BUG_TEXT)
+//         .map(|_| Connection { sender })
+// }
 
 fn event_loop(mut conn: rusqlite::Connection, receiver: Receiver<Message>) {
     while let Ok(message) = receiver.recv() {

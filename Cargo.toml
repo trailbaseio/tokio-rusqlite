@@ -16,6 +16,7 @@ bundled = ["rusqlite/bundled"]
 
 [dependencies]
 crossbeam-channel = "0.5"
+parking_lot = "0.12.3"
 rusqlite = { version = "^0.32.1", features = ["column_decltype", "modern_sqlite"]}
 serde = { version = "^1.0.203", features = ["derive"] }
 serde_rusqlite = "0.36.0"

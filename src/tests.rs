@@ -14,47 +14,41 @@ async fn open_in_memory_test() -> Result<()> {
 async fn call_success_test() -> Result<()> {
     let conn = Connection::open_in_memory().await?;
 
-    let result = conn
-        .call(|conn| {
-            conn.execute(
-                "CREATE TABLE person(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);",
-                [],
-            )
-            .map_err(|e| e.into())
-        })
-        .await;
+    let result = conn.call(|conn| {
+        conn.execute(
+            "CREATE TABLE person(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);",
+            [],
+        )
+        .map_err(|e| e.into())
+    });
 
     assert_eq!(0, result.unwrap());
 
     Ok(())
 }
 
-#[tokio::test]
-async fn call_unwrap_success_test() -> Result<()> {
-    let conn = Connection::open_in_memory().await?;
-
-    let result = conn
-        .call_unwrap(|conn| {
-            conn.execute(
-                "CREATE TABLE person(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);",
-                [],
-            )
-            .unwrap()
-        })
-        .await;
-
-    assert_eq!(0, result);
-
-    Ok(())
-}
+// #[tokio::test]
+// async fn call_unwrap_success_test() -> Result<()> {
+//     let conn = Connection::open_in_memory().await?;
+//
+//     let result = conn.call_unwrap(|conn| {
+//         conn.execute(
+//             "CREATE TABLE person(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);",
+//             [],
+//         )
+//         .unwrap()
+//     });
+//
+//     assert_eq!(0, result);
+//
+//     Ok(())
+// }
 
 #[tokio::test]
 async fn call_failure_test() -> Result<()> {
     let conn = Connection::open_in_memory().await?;
 
-    let result = conn
-        .call(|conn| conn.execute("Invalid sql", []).map_err(|e| e.into()))
-        .await;
+    let result = conn.call(|conn| conn.execute("Invalid sql", []).map_err(|e| e.into()));
 
     assert!(match result.unwrap_err() {
         crate::Error::Rusqlite(e) => {
@@ -103,9 +97,7 @@ async fn close_call_test() -> Result<()> {
 
     assert!(conn.close().await.is_ok());
 
-    let result = conn2
-        .call(|conn| conn.execute("SELECT 1;", []).map_err(|e| e.into()))
-        .await;
+    let result = conn2.call(|conn| conn.execute("SELECT 1;", []).map_err(|e| e.into()));
 
     assert!(matches!(
         result.unwrap_err(),
@@ -115,20 +107,19 @@ async fn close_call_test() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-#[should_panic]
-async fn close_call_unwrap_test() {
-    let conn = Connection::open_in_memory().await.unwrap();
-
-    let conn2 = conn.clone();
-
-    assert!(conn.close().await.is_ok());
-
-    conn2
-        .call_unwrap(|conn| conn.execute("SELECT 1;", []))
-        .await
-        .unwrap();
-}
+// #[tokio::test]
+// #[should_panic]
+// async fn close_call_unwrap_test() {
+//     let conn = Connection::open_in_memory().await.unwrap();
+//
+//     let conn2 = conn.clone();
+//
+//     assert!(conn.close().await.is_ok());
+//
+//     conn2
+//         .call_unwrap(|conn| conn.execute("SELECT 1;", []))
+//         .unwrap();
+// }
 
 #[tokio::test]
 async fn close_failure_test() -> Result<()> {
@@ -140,8 +131,7 @@ async fn close_failure_test() -> Result<()> {
             [],
         )
         .map_err(|e| e.into())
-    })
-    .await?;
+    })?;
 
     conn.call(|conn| {
         // Leak a prepared statement to make the database uncloseable
@@ -149,8 +139,7 @@ async fn close_failure_test() -> Result<()> {
         let stmt = Box::new(conn.prepare("INSERT INTO person VALUES (1, ?1);").unwrap());
         Box::leak(stmt);
         Ok(())
-    })
-    .await?;
+    })?;
 
     assert!(match conn.close().await.unwrap_err() {
         crate::Error::Close((_, e)) => {
@@ -238,7 +227,6 @@ async fn test_ergonomic_errors() -> Result<()> {
 
     let res = conn
         .call(|conn| failable_func(conn).map_err(|e| Error::Other(Box::new(e))))
-        .await
         .unwrap_err();
 
     let err = std::error::Error::source(&res)
@@ -254,15 +242,13 @@ async fn test_ergonomic_errors() -> Result<()> {
 async fn test_call_libsql_query() {
     let conn = Connection::open_in_memory().await.unwrap();
 
-    let result = conn
-        .call(|conn| {
-            conn.execute(
-                "CREATE TABLE person(id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
-                [],
-            )
-            .map_err(|e| e.into())
-        })
-        .await;
+    let result = conn.call(|conn| {
+        conn.execute(
+            "CREATE TABLE person(id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
+            [],
+        )
+        .map_err(|e| e.into())
+    });
 
     assert_eq!(0, result.unwrap());
 
@@ -344,7 +330,6 @@ async fn test_params() {
         )
         .map_err(|e| e.into())
     })
-    .await
     .unwrap();
 
     conn.query(
