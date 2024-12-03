@@ -1,26 +1,18 @@
 [package]
 name = "tokio-rusqlite"
 version = "0.6.0"
-authors = ["Programatik <programatik29@gmail.com>", "Adi Salimgereev <adisalimgereev@gmail.com>"]
+authors = []
 edition = "2021"
-description = "Asynchronous handle for rusqlite library."
-documentation = "https://docs.rs/tokio-rusqlite"
-homepage = "https://github.com/programatik29/tokio-rusqlite"
-repository = "https://github.com/programatik29/tokio-rusqlite"
-license = "MIT"
-keywords = ["async", "rusqlite", "sqlite"]
-categories = ["asynchronous", "database"]
+description = "Synchronous multi-threaded rusqlite wrapper"
+keywords = ["rusqlite", "sqlite"]
+categories = ["database"]
 
 [features]
 bundled = ["rusqlite/bundled"]
 
 [dependencies]
-crossbeam-channel = "0.5"
 parking_lot = "0.12.3"
 rusqlite = { version = "^0.32.1", features = ["column_decltype", "modern_sqlite"]}
 serde = { version = "^1.0.203", features = ["derive"] }
 serde_rusqlite = "0.36.0"
-tokio = { version = "1", features = ["sync"] }
-
-[dev-dependencies]
-tokio = { version = "1", features = ["full"] }
+thread_local = "1.1.8"
